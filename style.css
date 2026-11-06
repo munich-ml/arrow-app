@@ -1,0 +1,44 @@
+:root{color-scheme:dark;font-family:Inter,system-ui,sans-serif;font-size:14px;background:#0c141c;color:#e8f0f4}*{box-sizing:border-box}body{margin:0}
+main{max-width:1060px;margin:auto;padding:16px 16px 8px}
+header,.row,.buttons,.metrics,.legend{display:flex;align-items:center;gap:8px 10px;flex-wrap:wrap}header,.row{justify-content:space-between}
+header{margin-bottom:4px}.brand{font-size:17px;letter-spacing:3px;font-weight:800;color:#6ee7cf}.tag,small,footer{color:#a0b0bf}.tag{font-size:12px}
+h2{font-size:15px;margin:0;display:flex;align-items:center;gap:6px}p{margin:0;color:#aabac8;line-height:1.5}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0}.grid2 .panel{margin:0}
+.panel{background:#14212c;border:1px solid #2b3b47;border-radius:12px;padding:14px 16px;margin:12px 0}
+.buttons{margin:10px 0 0}
+button,select,.file{font:inherit;font-size:13px;line-height:1.2;border-radius:7px;padding:6px 11px;border:1px solid #405665;background:#213441;color:#edf6fa;cursor:pointer}
+select{padding:6px 8px}.primary{background:#6ee7cf;color:#0c2824;border-color:#6ee7cf;font-weight:650}
+button:disabled,select:disabled{opacity:.4;cursor:not-allowed}button:hover:enabled,.file:hover{filter:brightness(1.15)}
+button:focus-visible,select:focus-visible,.file:focus-within,summary:focus-visible{outline:2px solid #f9b969;outline-offset:2px}
+.danger{color:#ff9a9a!important;background:#37262c!important;border-color:#89535b!important}
+.metrics{margin-top:10px;gap:6px 28px}.metrics small,.metrics strong{display:block}.metrics small{font-size:12px}.metrics strong{margin-top:2px;font-size:17px;font-weight:650}
+.metrics.inline{margin-top:0}.metrics.inline div{display:flex;align-items:baseline;gap:6px}.metrics.inline strong{font-size:14px;margin:0}
+.note{font-size:12.5px;margin-top:8px}.note:empty{display:none}.buttons .note{margin:0}
+.file input{display:none}#session{flex:1;min-width:180px;max-width:420px}
+canvas{width:100%;height:320px;display:block;background:#0e1922;border-radius:8px;margin-top:10px}#plot{touch-action:pan-y;cursor:crosshair}
+.legend{font-size:12px;margin-top:6px}.legend span:nth-child(1){color:#6ee7cf}.legend span:nth-child(2){color:#ffb56b}.legend span:nth-child(3){color:#b6a0ff}
+#connection{color:#6ee7cf;font-size:13px}#powerInfo.warn,#battery.warn{color:#ffca91}label{font-size:13px}
+/* Explanations: hover, tap (focus) or keyboard show the tip. */
+.info{all:unset;box-sizing:border-box;display:inline-grid;place-items:center;flex:none;width:17px;height:17px;border-radius:50%;border:1px solid #5b7282;color:#a0b0bf;font:600 10.5px/1 system-ui,sans-serif;cursor:help;position:relative}
+/* No hover filter on .info: a filter would trap the tip in its own stacking context,
+   below later disabled (translucent) buttons. Raise the active icon instead. */
+.info:hover,.info:focus{color:#e8f0f4;border-color:#a0b0bf;filter:none!important;z-index:30}.info:focus-visible{outline:2px solid #f9b969;outline-offset:2px}
+.info:hover::after,.info:focus::after{content:attr(data-tip);position:absolute;top:calc(100% + 6px);left:-8px;z-index:20;width:max-content;max-width:min(300px,calc(100vw - 48px));padding:8px 10px;background:#22323e;border:1px solid #405665;border-radius:8px;color:#dfe9ef;font:400 12.5px/1.45 system-ui,sans-serif;text-align:left;white-space:normal;box-shadow:0 6px 18px #0009}
+.info.end::after{left:auto;right:-8px}
+/* Messages as a toast at the bottom of the viewport, hidden when empty. */
+#message{position:sticky;bottom:10px;z-index:10;margin:12px 0 0;padding:9px 12px;white-space:pre-wrap;color:#ffca91;background:#2a2622;border:1px solid #6b5137;border-radius:8px;font-size:13px}#message:empty{display:none}
+footer{padding:10px 0;font-size:11px}
+details.panel>summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer}details.panel>summary::-webkit-details-marker{display:none}
+details.panel>summary h2::before{content:'▸';display:inline-block;width:12px;color:#a0b0bf;transition:transform .15s}details.panel[open]>summary h2::before{transform:rotate(90deg)}
+#rudderStatus{font-size:13px;color:#a0b0bf}
+.sumvals{display:flex;align-items:baseline;gap:10px;font-size:13px;color:#a0b0bf}.sumvals strong{color:#e8f0f4;font-size:14px}.sumvals strong.warn{color:#ffca91}
+#batteryPlot{height:220px}.battery-legend span{color:#a0b0bf!important;display:inline-flex;align-items:center;gap:5px}
+.battery-legend span:nth-child(-n+3)::before{content:'';display:inline-block;width:14px;height:3px;background:#6ee7cf;border-radius:2px}
+.battery-legend span:nth-child(2)::before{height:10px;background:#6ee7cf33;border:1px solid #6ee7cf66}.battery-legend span:nth-child(3)::before{height:5px;background:#ffb56b}details.panel[open]>summary{margin-bottom:10px}
+:where(select){max-width:100%}.buttons label{min-width:0;max-width:100%}
+.session-list table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed;margin-top:8px}.session-list th,.session-list td{text-align:left;padding:5px 6px;border-bottom:1px solid #2b3b47;overflow-wrap:anywhere}.session-list th{color:#a0b0bf;font-weight:500;font-size:12px}.session-list th:first-child{width:16%}.session-list th:last-child{width:22%}.session-list:has(tbody:empty){display:none}
+.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+.rudder-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.rudder-grid fieldset{min-width:0;margin:0;border:1px solid #405665;border-radius:8px;padding:8px 12px 12px}.rudder-grid legend{padding:0 6px;font-weight:650;font-size:13px}.rudder-grid label{display:block}.rudder-grid output{float:right;color:#6ee7cf}.rudder-grid input[type=range]{width:100%;margin:8px 0 10px;accent-color:#6ee7cf}
+.endpoints{display:flex;gap:10px}.endpoints label{flex:1;min-width:0}.endpoints input{width:100%;margin-top:3px;padding:5px 7px;background:#0e1922;border:1px solid #405665;border-radius:6px;color:#e8f0f4;font:inherit;font-size:13px}#rudderMessage{color:#ffca91}
+@media(max-width:760px){.grid2{grid-template-columns:1fr}}
+@media(max-width:600px){main{padding:12px 10px 6px}.panel{padding:12px}.rudder-grid{grid-template-columns:1fr}canvas{height:240px}.metrics{gap:6px 20px}.session-list th:first-child{width:22%}.session-list th:last-child{width:26%}}
