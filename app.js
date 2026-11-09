@@ -7,6 +7,10 @@ import {powerText,batteryPercent} from './power.js';
 import {BatteryHistory,segments,BUCKET_MS} from './battery-history.js';
 import {ticks,label,ZoomView} from './timeaxis.js';
 import {bodyAxes,BODY_LABELS} from './mount.js';
+import {parseBoards,boardLabel} from './boards.js';
+// Board LUT (boards.csv, shared with XIAO_eval); missing or broken file: IDs stay hex.
+let boards=new Map();
+fetch('boards.csv').then(r=>r.ok?r.text():'').then(t=>{if(t){boards=parseBoards(t);describe();}}).catch(e=>console.warn(e));
 const $=id=>document.getElementById(id),device=new ArrowDevice();
 let connected=false,latest=null,busy=false,data={sessions:[],errors:[]},livePoints=[],abort;
 let boardSessions=null,boardSnapshot=null,switchedOff=false;
@@ -231,7 +235,9 @@ function resetView() {zoom.reset();paused=null;}
 }
 function load(parsed) {
   data=parsed;$('source').value='session';resetView();
-  $('session').replaceChildren(...data.sessions.map((s,i)=>new Option(sessionLabel(s),i)));
+  // Several boards loaded: the same session ID can occur twice, so name the board.
+  const mixed=new Set(data.sessions.map(s=>s.board)).size>1;
+  $('session').replaceChildren(...data.sessions.map((s,i)=>new Option((mixed?boardLabel(s.board,boards)+' · ':'')+sessionLabel(s),i)));
   describe();controls();
   return damageReport(parsed);
 }
@@ -243,7 +249,7 @@ function describe() {
   const s=selected();
   const rate=s?.hz?`${s.rateEstimated?'ca. ':''}${s.hz} Hz`:'Rate unbekannt';
   // Date, sample count and completion are already in the session selector.
-  $('summary').textContent=s?`${data.demo?'Demo (synthetisch) · ':''}${rate}${s.errors?` · ${s.errors} beschädigte Records, CSV gesperrt`:''}`:'Keine Daten geladen.';
+  $('summary').textContent=s?`${data.demo?'Demo (synthetisch) · ':''}${data.demo?'':boardLabel(s.board,boards)+' · '}${rate}${s.errors?` · ${s.errors} beschädigte Records, CSV gesperrt`:''}`:'Keine Daten geladen.';
   draw();
 }
 function save(blob,name) {const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);}
@@ -290,6 +296,7 @@ async function afterConnect() {
   livePoints=[];resetView();$('source').value='live';describe();
   if(!latest.powerAvailable) $('powerInfo').textContent='Akkuanzeige: Firmware 0.2.3 hochladen.';
   const c=config(await device.chars.config.readValue());$('rate').value=c.hz;liveRanges=c;livePoints=[]; // drop points scaled before the readback
+  $('connection').textContent=`Verbunden · ${c.board?boardLabel(c.board,boards):'Board-ID ab Firmware 0.2.9'}`;
   if(latest.ruddersAvailable) {showRudders(await device.getRudders(),true);$('rudderMessage').textContent='';}
   else $('rudderMessage').textContent='Rudersteuerung: aktuelle Firmware hochladen.';
   if([0,3].includes(latest.state)&&!rudderState?.active) await refreshBoard();

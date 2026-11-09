@@ -1,3 +1,4 @@
+import {boardHex} from './boards.js';
 import {bodyAxes,BODY_COLUMNS} from './mount.js';
 export const UUID = Object.fromEntries(['service','control','status','live','download','config','bulk','rudders','power'].map((n,i)=>[n,`b7a1000${i}-6a42-4d87-9c21-82d047b0f001`]));
 export const RECORD_SIZE=32, CAPACITY=2097152;
@@ -34,10 +35,12 @@ export function ranges(accelG,gyroDps100) {
   if(!(accelG in ACCEL_LSB_G)||!(gyroDps100 in GYRO_LSB_DPS)) throw Error('Unbekannter Messbereich');
   return {accelG,gyroDps100};
 }
-// Config readback: u16 rate, from 0.2.5 also accel range (g) and gyro range /100.
+// Config readback: u16 rate, from 0.2.5 also accel range (g) and gyro range /100,
+// from 0.2.9 the board ID (u32, lower half of the nRF52 DEVICEID).
 export function config(value) {
   const d=view(value); if(d.byteLength<2) throw Error('Config-Länge');
-  return {hz:d.getUint16(0,true),...(d.byteLength>=4?ranges(d.getUint8(2),d.getUint8(3)):LEGACY_RANGES)};
+  return {hz:d.getUint16(0,true),...(d.byteLength>=4?ranges(d.getUint8(2),d.getUint8(3)):LEGACY_RANGES),
+    board:d.byteLength>=8?boardHex(d.getUint32(4,true)):null};
 }
 export function axes(d,offset,r=LEGACY_RANGES) {
   const g=GYRO_LSB_DPS[r.gyroDps100],a=ACCEL_LSB_G[r.accelG];
@@ -63,7 +66,7 @@ export function decode(value) {
     if(type===1) {
       const hz=d.getUint16(o+16,true),epoch=d.getBigUint64(o+8,true);
       if(![26,52,104].includes(hz)||!(b[18] in ACCEL_LSB_G)||!(b[19] in GYRO_LSB_DPS)||d.getUint32(o+20,true)!==25||epoch>8640000000000000n) { fail(o,b,'Header'); current=null; continue; }
-      current=owner={id,epoch:Number(epoch),hz,ranges:ranges(b[18],b[19]),samples:[],complete:false,dropped:null,errors:0}; sessions.push(current);
+      current=owner={id,board:boardHex(d.getUint32(o+24,true)),epoch:Number(epoch),hz,ranges:ranges(b[18],b[19]),samples:[],complete:false,dropped:null,errors:0}; sessions.push(current);
     } else if(!current||current.id!==id||current.complete) fail(o,b,'Record ohne offene Session');
     else if(type===2) {
       const us=d.getBigUint64(o+8,true);
@@ -92,12 +95,12 @@ export function csv(session) {
 }
 export function csvAll(sessions) {
   // Raw sensor axes first (unchanged columns), model axes appended at the end.
-  const lines=['session,t_sensor_us,utc_approx,gx_dps,gy_dps,gz_dps,ax_g,ay_g,az_g,session_start_utc_approx,sample_rate_hz,session_complete,session_sample_count,'+BODY_COLUMNS.join(',')];
+  const lines=['session,t_sensor_us,utc_approx,gx_dps,gy_dps,gz_dps,ax_g,ay_g,az_g,session_start_utc_approx,sample_rate_hz,session_complete,session_sample_count,'+BODY_COLUMNS.join(',')+',board_id'];
   for(const session of sessions) for(const s of session.samples) lines.push([
     session.id,s.us,session.epoch?new Date(session.epoch+s.us/1000).toISOString():'',
     ...s.axes.map(x=>x.toFixed(7)),session.epoch?new Date(session.epoch).toISOString():'',
     session.rateEstimated?'':(session.hz??''),session.complete??'',session.samples.length,
-    ...bodyAxes(s.axes).map(x=>x.toFixed(7)),
+    ...bodyAxes(s.axes).map(x=>x.toFixed(7)),session.board??'',
   ].join(','));
   return lines.join('\r\n')+'\r\n';
 }

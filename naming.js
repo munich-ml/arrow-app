@@ -14,9 +14,10 @@ export function sessionLabel(session) {
   const completion=session.complete===null?'Abschluss unbekannt':session.complete?'abgeschlossen':'unvollständig';
   return `#${session.id} · ${sessionDate(session.epoch)} · ${session.samples.length} Samples · ${completion}${session.errors?' · beschädigt':''}`;
 }
+// From firmware 0.2.9 the board ID is part of the name: arrow-3fa2c91e-session-7_….csv
 export function csvFilename(session,exportedAt=Date.now()) {
   const started=fileTimestamp(session.epoch);
-  return `arrow-session-${session.id}_${started||`undatiert_export_${fileTimestamp(exportedAt)}`}.csv`;
+  return `arrow-${session.board?session.board+'-':''}session-${session.id}_${started||`undatiert_export_${fileTimestamp(exportedAt)}`}.csv`;
 }
 export function allCsvFilename(exportedAt=Date.now()) {
   return `arrow-sessions_export_${fileTimestamp(exportedAt)}.csv`;

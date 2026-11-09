@@ -3,7 +3,7 @@
 // (tests/pwa.test.js checks it).
 const CACHE='arrow-app';
 const FILES=['./','index.html','style.css','manifest.webmanifest','icon-192.png','icon-512.png',
-  'app.js','battery-history.js','bulk.js','csv-import.js','mount.js','naming.js','power.js',
+  'app.js','battery-history.js','boards.csv','boards.js','bulk.js','csv-import.js','mount.js','naming.js','power.js',
   'protocol.js','rudders.js','timeaxis.js','transport.js'];
 self.addEventListener('install',event=>{
   event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(FILES)).then(()=>self.skipWaiting()));
