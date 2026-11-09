@@ -102,13 +102,17 @@ export class ArrowDevice {
     } while(Date.now()<end);
     throw Error('Zeitüberschreitung; Gerätestatus erneut lesen.');
   }
-  start() { return this.exclusive(async()=>{
+  // hz: rate chosen in the app. Applied before START when the board still has another
+  // one (Config is RAM only, 104 Hz after boot from 0.2.6, 52 Hz before), so the header records what was chosen.
+  start(hz) { return this.exclusive(async()=>{
     const before=await this.getStatus(); if(before.state!==0) throw Error('Start nur im Leerlauf');
+    if(hz!==undefined&&(await this.chars.config.readValue()).getUint16(0,true)!==hz) await this.applyRate(hz);
     await this.write(startCommand());
     return this.waitFor(s=>s.state===1&&s.session===before.session+1);
   }); }
   stop() { return this.exclusive(async()=>{await this.write(Uint8Array.of(2)); return this.waitFor(s=>s.state===0);}); }
-  setRate(hz) { return this.exclusive(async()=>{
+  setRate(hz) { return this.exclusive(()=>this.applyRate(hz)); }
+  async applyRate(hz) {
     if(![26,52,104].includes(hz)) throw Error('Ungültige Rate');
     if((await this.getStatus()).state!==0) throw Error('Konfiguration nur im Leerlauf');
     await this.chars.config.writeValueWithResponse(Uint8Array.of(hz,0));
@@ -116,7 +120,7 @@ export class ArrowDevice {
     await pause(100);
     const s=await this.getStatus(),v=await this.chars.config.readValue();
     if(s.error||v.getUint16(0,true)!==hz) throw Error('Konfiguration nicht übernommen');
-  }); }
+  }
   powerOff() { return this.exclusive(async()=>{
     const s=await this.getStatus();
     if(!s.offAvailable) throw Error('Ausschalten benötigt Firmware 0.2.3. Bitte xiao_sense hochladen.');

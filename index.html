@@ -1,14 +1,14 @@
 <!doctype html>
 <html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Arrow · Flight Recorder</title><link rel="stylesheet" href="style.css"><link rel="manifest" href="manifest.webmanifest"><meta name="theme-color" content="#0c141c"><link rel="icon" href="icon-192.png"><link rel="apple-touch-icon" href="icon-192.png"></head>
 <body><main>
-<header><span class="brand">↗ ARROW</span><span class="tag">Flight Recorder · XIAO nRF52840 Sense · v0.2.4</span></header>
+<header><span class="brand">↗ ARROW</span><span class="tag">Flight Recorder · XIAO nRF52840 Sense · v0.2.6</span></header>
 <div class="grid2">
 <section class="panel"><div class="row"><h2>Verbindung <button type="button" class="info" aria-label="Hinweise zur Verbindung" data-tip="Chrome über localhost (PC) oder HTTPS (Android). Gesucht wird „Arrow Logger“ mit der Arrow-Firmware; andere BLE-Geräte erscheinen nicht. Nichts gefunden: Board einschalten, andere Verbindungen zum Board trennen, erneut verbinden. Demo und CSV funktionieren ohne Board.">i</button></h2><span id="connection" role="status">Offline</span></div>
 <div class="buttons"><button id="connect" class="primary">Verbinden</button><button id="disconnect" disabled>Trennen</button><button id="powerOff" class="danger" disabled>Ausschalten…</button><button type="button" class="info" aria-label="Ein- und Ausschalten" data-tip="Einschalten: Reset-Taster einmal kurz drücken (doppelt startet den Bootloader) oder USB anstecken. Ohne Verbindung schaltet sich der XIAO im Leerlauf nach 10 min aus – nicht bei USB, aktiver PWM oder laufender Aufzeichnung.">i</button></div>
 <p id="hint" class="note"></p></section>
 <section class="panel"><h2>Aufzeichnung</h2>
 <div class="metrics"><div><small>Zustand</small><strong id="state">—</strong></div><div><small>Samples / Lücken <button type="button" class="info end" aria-label="Zu Samples und Lücken" data-tip="Lücken: geschätzte ausgelassene Abtastperioden. Zeitbasis ist der IMU-Hardwarezähler (25 µs) zum Auslesezeitpunkt, keine exakte Data-Ready-Zeit.">i</button></small><strong id="samples">—</strong></div></div>
-<div class="buttons"><select id="rate" disabled aria-label="Abtastrate"><option value="26">26 Hz</option><option value="52" selected>52 Hz</option><option value="104">104 Hz</option></select><button id="configure" disabled>Übernehmen</button><button id="start" class="primary" disabled>● Start</button><button id="stop" disabled>■ Stopp</button></div></section>
+<div class="buttons"><select id="rate" disabled aria-label="Abtastrate"><option value="26">26 Hz</option><option value="52">52 Hz</option><option value="104" selected>104 Hz</option></select><button id="configure" disabled>Übernehmen</button><button id="start" class="primary" disabled>● Start</button><button id="stop" disabled>■ Stopp</button></div></section>
 </div>
 <details class="panel" id="batteryPanel"><summary><h2>Akku</h2><span class="sumvals"><strong id="battery">—</strong><span id="supply">—</span></span></summary>
 <p id="powerInfo" class="note" role="status"></p>

@@ -1,5 +1,5 @@
 import {ArrowDevice} from './transport.js';
-import {decode,csv,csvAll,live,ERRORS,crc32,exportable,damageReport} from './protocol.js';
+import {decode,csv,csvAll,live,config,LEGACY_RANGES,ERRORS,crc32,exportable,damageReport} from './protocol.js';
 import {parseCsv} from './csv-import.js';
 import {sessionLabel,sessionDate,csvFilename,allCsvFilename} from './naming.js';
 import {validChannels,NEUTRAL} from './rudders.js';
@@ -247,8 +247,9 @@ function describe() {
   draw();
 }
 function save(blob,name) {const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);}
+let liveRanges=LEGACY_RANGES; // from the config readback after connecting
 function onLive(v) {
-  const s=live(v),us=s.seconds*1e6;
+  const s=live(v,liveRanges),us=s.seconds*1e6;
   if(livePoints.length&&us<livePoints.at(-1).us)livePoints=[]; // IMU restart resets the time base
   if(!livePoints.length) liveAnchor=Date.now()-us/1000; // wall clock at sensor time 0
   livePoints.push({us,t:liveAnchor+us/1000,axes:s.axes});if(livePoints.length>500)livePoints.shift();
@@ -288,7 +289,7 @@ async function afterConnect() {
   connected=true;manualDisconnect=false;$('connection').textContent='Verbunden';
   livePoints=[];resetView();$('source').value='live';describe();
   if(!latest.powerAvailable) $('powerInfo').textContent='Akkuanzeige: Firmware 0.2.3 hochladen.';
-  const c=await device.chars.config.readValue();$('rate').value=c.getUint16(0,true);
+  const c=config(await device.chars.config.readValue());$('rate').value=c.hz;liveRanges=c;livePoints=[]; // drop points scaled before the readback
   if(latest.ruddersAvailable) {showRudders(await device.getRudders(),true);$('rudderMessage').textContent='';}
   else $('rudderMessage').textContent='Rudersteuerung: aktuelle Firmware hochladen.';
   if([0,3].includes(latest.state)&&!rudderState?.active) await refreshBoard();
@@ -306,7 +307,7 @@ $('powerOff').onclick=()=>{
   if(!confirm('XIAO ausschalten? Einschalten danach mit dem Reset-Taster oder durch Anstecken von USB.'))return;
   action(async()=>{switchedOff=true;try {await device.powerOff();}catch(e) {switchedOff=false;throw e;}});
 };
-$('start').onclick=()=>action(async()=>{livePoints=[];update(await device.start());});
+$('start').onclick=()=>action(async()=>{livePoints=[];update(await device.start(Number($('rate').value)));});
 $('stop').onclick=()=>action(async()=>{update(await device.stop());if(!rudderState?.active) await refreshBoard();});
 $('refreshSessions').onclick=()=>action(refreshBoard);
 $('configure').onclick=()=>action(()=>device.setRate(Number($('rate').value)));

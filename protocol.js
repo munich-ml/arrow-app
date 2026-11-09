@@ -26,12 +26,26 @@ export function readCommand(offset) {
   if(!Number.isInteger(offset)||offset<0||offset>=CAPACITY||offset%16) throw Error('Ungültiger Offset');
   const b=new Uint8Array(5); b[0]=4; new DataView(b.buffer).setUint32(1,offset,true); return b;
 }
-export function axes(d,offset) {
-  return Array.from({length:6},(_,i)=>d.getInt16(offset+2*i,true)*(i<3?0.0175:0.000122));
+// IMU ranges as stored in header bytes 18 (g) and 19 (dps/100) -> datasheet LSB sensitivity.
+// Firmware up to 0.2.4: ±4 g / ±500 dps; from 0.2.5: ±16 g / ±2000 dps.
+export const ACCEL_LSB_G={4:0.000122,16:0.000488}, GYRO_LSB_DPS={5:0.0175,20:0.070};
+export const LEGACY_RANGES={accelG:4,gyroDps100:5};
+export function ranges(accelG,gyroDps100) {
+  if(!(accelG in ACCEL_LSB_G)||!(gyroDps100 in GYRO_LSB_DPS)) throw Error('Unbekannter Messbereich');
+  return {accelG,gyroDps100};
 }
-export function live(value) {
+// Config readback: u16 rate, from 0.2.5 also accel range (g) and gyro range /100.
+export function config(value) {
+  const d=view(value); if(d.byteLength<2) throw Error('Config-Länge');
+  return {hz:d.getUint16(0,true),...(d.byteLength>=4?ranges(d.getUint8(2),d.getUint8(3)):LEGACY_RANGES)};
+}
+export function axes(d,offset,r=LEGACY_RANGES) {
+  const g=GYRO_LSB_DPS[r.gyroDps100],a=ACCEL_LSB_G[r.accelG];
+  return Array.from({length:6},(_,i)=>d.getInt16(offset+2*i,true)*(i<3?g:a));
+}
+export function live(value,r=LEGACY_RANGES) {
   const d=view(value); if(d.byteLength!==20) throw Error('Live-Länge');
-  return {seconds:d.getUint32(0,true)*25/1e6,axes:axes(d,4),sequence:d.getUint32(16,true)};
+  return {seconds:d.getUint32(0,true)*25/1e6,axes:axes(d,4,r),sequence:d.getUint32(16,true)};
 }
 export function decode(value) {
   const d=view(value); if(d.byteLength>CAPACITY||d.byteLength%32) throw Error('Binärdatei muss aus 32-Byte-Records bestehen');
@@ -48,13 +62,13 @@ export function decode(value) {
     if(b[1]!==1||type<1||type>3||crc32(b.subarray(0,28))!==d.getUint32(o+28,true)) { fail(o,b,'CRC/Version/Typ'); current=null; continue; }
     if(type===1) {
       const hz=d.getUint16(o+16,true),epoch=d.getBigUint64(o+8,true);
-      if(![26,52,104].includes(hz)||b[18]!==4||b[19]!==5||d.getUint32(o+20,true)!==25||epoch>8640000000000000n) { fail(o,b,'Header'); current=null; continue; }
-      current=owner={id,epoch:Number(epoch),hz,samples:[],complete:false,dropped:null,errors:0}; sessions.push(current);
+      if(![26,52,104].includes(hz)||!(b[18] in ACCEL_LSB_G)||!(b[19] in GYRO_LSB_DPS)||d.getUint32(o+20,true)!==25||epoch>8640000000000000n) { fail(o,b,'Header'); current=null; continue; }
+      current=owner={id,epoch:Number(epoch),hz,ranges:ranges(b[18],b[19]),samples:[],complete:false,dropped:null,errors:0}; sessions.push(current);
     } else if(!current||current.id!==id||current.complete) fail(o,b,'Record ohne offene Session');
     else if(type===2) {
       const us=d.getBigUint64(o+8,true);
       if(us>BigInt(Number.MAX_SAFE_INTEGER)|| (current.samples.length && Number(us)<=current.samples.at(-1).us)) { fail(o,b,'Zeitfolge'); continue; }
-      current.samples.push({us:Number(us),axes:axes(d,o+16)});
+      current.samples.push({us:Number(us),axes:axes(d,o+16,current.ranges)});
     } else {
       current.complete=true; current.dropped=d.getUint32(o+20,true);
       if(d.getUint32(o+16,true)!==current.samples.length) fail(o,b,'Sample-Anzahl');
