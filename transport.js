@@ -1,4 +1,5 @@
-import {UUID,status,startCommand,powerOffCommand,PING,CAPACITY} from './protocol.js';
+import {UUID,status,startCommand,powerOffCommand,PING,CAPACITY,ERRORS} from './protocol.js';
+import {encodeCal,decodeCal} from './imucal.js';
 import {WindowReceiver,windowCommand,WINDOW_SIZE} from './bulk.js';
 import {rudderCommand,rudderStatus} from './rudders.js';
 import {power} from './power.js';
@@ -59,6 +60,8 @@ export class ArrowDevice {
         await this.chars.power.startNotifications();
         onPower?.(power(await this.chars.power.readValue()));
       }
+      // IMU calibration from firmware 0.3.0; older firmware has no such characteristic.
+      try {this.chars.cal=await service.getCharacteristic(UUID.cal);} catch {delete this.chars.cal;}
       onStatus?.(s); return s;
     } catch(e) { this.disconnect(); throw e; }
   }
@@ -93,6 +96,24 @@ export class ArrowDevice {
     } while(Date.now()<end);
     throw Error('Keine Bestätigung der Rudersteuerung');
   });}
+  get calAvailable() {return !!this.chars.cal;}
+  async readCal() {
+    if(!this.chars.cal) throw Error('IMU-Abgleich benötigt Firmware 0.3.0. Bitte xiao_sense hochladen.');
+    return decodeCal(await this.chars.cal.readValue());
+  }
+  // Writes all 28 bytes, then checks the status error and the read-back value.
+  writeCal(cal) { return this.exclusive(async()=>{
+    if(!this.chars.cal) throw Error('IMU-Abgleich benötigt Firmware 0.3.0. Bitte xiao_sense hochladen.');
+    if((await this.getStatus()).state!==0) throw Error('Abgleich nur im Leerlauf speichern');
+    const bytes=encodeCal(cal);
+    await this.chars.cal.writeValueWithResponse(bytes);
+    await pause(150);
+    const s=await this.getStatus();
+    if(s.error) throw Error(`Abgleich nicht gespeichert: ${ERRORS[s.error]||'Fehler '+s.error}`);
+    const v=await this.chars.cal.readValue(),back=new Uint8Array(v.buffer,v.byteOffset,v.byteLength);
+    if(back.length!==bytes.length||back.some((v,i)=>v!==bytes[i])) throw Error('Abgleich nicht übernommen (Rücklesen weicht ab)');
+    return decodeCal(back);
+  }); }
   async write(bytes) { await this.chars.control.writeValueWithResponse(bytes); }
   async waitFor(predicate,timeout=5000) {
     const end=Date.now()+timeout;

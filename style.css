@@ -40,5 +40,10 @@ details.panel>summary h2::before{content:'▸';display:inline-block;width:12px;c
 .visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
 .rudder-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.rudder-grid fieldset{min-width:0;margin:0;border:1px solid #405665;border-radius:8px;padding:8px 12px 12px}.rudder-grid legend{padding:0 6px;font-weight:650;font-size:13px}.rudder-grid label{display:block}.rudder-grid output{float:right;color:#6ee7cf}.rudder-grid input[type=range]{width:100%;margin:8px 0 10px;accent-color:#6ee7cf}
 .endpoints{display:flex;gap:10px}.endpoints label{flex:1;min-width:0}.endpoints input{width:100%;margin-top:3px;padding:5px 7px;background:#0e1922;border:1px solid #405665;border-radius:6px;color:#e8f0f4;font:inherit;font-size:13px}#rudderMessage{color:#ffca91}
-@media(max-width:760px){.grid2{grid-template-columns:1fr}}
+.cal-grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:14px}#attitude{height:300px;margin-top:0}
+.poses{list-style:none;padding:0;margin:10px 0 0;display:grid;grid-template-columns:1fr 1fr;gap:6px}.poses li{border:1px solid #405665;border-radius:7px;padding:6px 8px;font-size:12.5px;color:#aabac8}
+.poses li.current{border-color:#f9b969;color:#f9e2c2}.poses li.done{border-color:#6ee7cf;color:#6ee7cf}.poses li.done::before{content:'✓ '}
+.meter{height:6px;background:#0e1922;border-radius:3px;margin-top:10px;overflow:hidden}.meter span{display:block;height:100%;width:0;background:#6ee7cf;transition:width .1s}
+.step{color:#f9e2c2}.check{display:inline-flex;align-items:center;gap:5px;font-size:13px;color:#aabac8}.check input{accent-color:#6ee7cf}
+@media(max-width:760px){.grid2,.cal-grid{grid-template-columns:1fr}}
 @media(max-width:600px){main{padding:12px 10px 6px}.panel{padding:12px}.rudder-grid{grid-template-columns:1fr}canvas{height:240px}.metrics{gap:6px 20px}.session-list th:first-child{width:22%}.session-list th:last-child{width:26%}}

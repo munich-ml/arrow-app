@@ -1,6 +1,7 @@
 import {boardHex} from './boards.js';
 import {bodyAxes,BODY_COLUMNS} from './mount.js';
-export const UUID = Object.fromEntries(['service','control','status','live','download','config','bulk','rudders','power'].map((n,i)=>[n,`b7a1000${i}-6a42-4d87-9c21-82d047b0f001`]));
+import {decodeCal} from './imucal.js';
+export const UUID = Object.fromEntries(['service','control','status','live','download','config','bulk','rudders','power','cal'].map((n,i)=>[n,`b7a1000${i}-6a42-4d87-9c21-82d047b0f001`]));
 export const RECORD_SIZE=32, CAPACITY=2097152;
 export const ERRORS=['OK','Ungültiges Kommando','Gerät beschäftigt / Zustand unzulässig','IMU-Fehler','Flash-Fehler','Flash voll','Kommando-Warteschlange voll','BLE-Start fehlgeschlagen'];
 export function crc32(bytes) {
@@ -62,12 +63,17 @@ export function decode(value) {
   for(let o=0;o<d.byteLength;o+=32) {
     const b=new Uint8Array(d.buffer,d.byteOffset+o,32), type=b[0], id=d.getUint32(o+4,true);
     if(b.every(x=>x===255)) continue;
-    if(b[1]!==1||type<1||type>3||crc32(b.subarray(0,28))!==d.getUint32(o+28,true)) { fail(o,b,'CRC/Version/Typ'); current=null; continue; }
+    if(b[1]!==1||type<1||type>4||crc32(b.subarray(0,28))!==d.getUint32(o+28,true)) { fail(o,b,'CRC/Version/Typ'); current=null; continue; }
     if(type===1) {
       const hz=d.getUint16(o+16,true),epoch=d.getBigUint64(o+8,true);
       if(![26,52,104].includes(hz)||!(b[18] in ACCEL_LSB_G)||!(b[19] in GYRO_LSB_DPS)||d.getUint32(o+20,true)!==25||epoch>8640000000000000n) { fail(o,b,'Header'); current=null; continue; }
-      current=owner={id,board:boardHex(d.getUint32(o+24,true)),epoch:Number(epoch),hz,ranges:ranges(b[18],b[19]),samples:[],complete:false,dropped:null,errors:0}; sessions.push(current);
+      current=owner={id,board:boardHex(d.getUint32(o+24,true)),epoch:Number(epoch),hz,ranges:ranges(b[18],b[19]),cal:null,samples:[],complete:false,dropped:null,errors:0}; sessions.push(current);
     } else if(!current||current.id!==id||current.complete) fail(o,b,'Record ohne offene Session');
+    else if(type===4) {
+      // Calibration valid at START (firmware 0.3.0+), directly after the header.
+      if(current.samples.length||current.cal) fail(o,b,'Abgleich an falscher Stelle');
+      else try {current.cal=decodeCal(d,o+8,20);} catch {fail(o,b,'Abgleich');}
+    }
     else if(type===2) {
       const us=d.getBigUint64(o+8,true);
       if(us>BigInt(Number.MAX_SAFE_INTEGER)|| (current.samples.length && Number(us)<=current.samples.at(-1).us)) { fail(o,b,'Zeitfolge'); continue; }

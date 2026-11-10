@@ -7,10 +7,12 @@ import {powerText,batteryPercent} from './power.js';
 import {BatteryHistory,segments,BUCKET_MS} from './battery-history.js';
 import {ticks,label,ZoomView} from './timeaxis.js';
 import {bodyAxes,BODY_LABELS} from './mount.js';
-import {parseBoards,boardLabel} from './boards.js';
+import {parseBoards,boardLabel,serializeBoards} from './boards.js';
+import {CalWizard,hasCal,sameCal,emptyCal,applyCal,downVector,poseLabel,POSE_KEYS} from './imucal.js';
+import {AttitudeView,rollPitch} from './view3d.js';
 // Board LUT (boards.csv, shared with XIAO_eval); missing or broken file: IDs stay hex.
 let boards=new Map();
-fetch('boards.csv').then(r=>r.ok?r.text():'').then(t=>{if(t){boards=parseBoards(t);describe();}}).catch(e=>console.warn(e));
+fetch('boards.csv').then(r=>r.ok?r.text():'').then(t=>{if(t){boards=parseBoards(t);describe();showCal();}}).catch(e=>console.warn(e));
 const $=id=>document.getElementById(id),device=new ArrowDevice();
 let connected=false,latest=null,busy=false,data={sessions:[],errors:[]},livePoints=[],abort;
 let boardSessions=null,boardSnapshot=null,switchedOff=false;
@@ -123,9 +125,11 @@ function controls() {
   for(const id of ['connect','demo','file']) $(id).disabled=busy||(id==='connect'&&connected);
   $('disconnect').disabled=!connected;
   $('powerOff').disabled=!connected||busy||!latest?.offAvailable||![0,3].includes(latest?.state)||!!rudderState?.active;
-  for(const id of ['start','download','configure','rate']) $(id).disabled=!connected||busy||latest?.state!==0;
-  $('stop').disabled=!connected||busy||latest?.state!==1;
-  $('erase').disabled=!connected||busy||![0,3].includes(latest?.state);
+  for(const id of ['start','download','configure','rate']) $(id).disabled=!connected||busy||!!wizard||latest?.state!==0;
+  $('stop').disabled=!connected||busy||!!wizard||latest?.state!==1;
+  $('erase').disabled=!connected||busy||!!wizard||![0,3].includes(latest?.state);
+  if(wizard) $('powerOff').disabled=true;
+  calControls();
   $('refreshSessions').disabled=!connected||busy||![0,3].includes(latest?.state)||!latest?.catalogAvailable;
   const canEdit=connected&&!!latest?.ruddersAvailable&&[0,1].includes(latest?.state)&&!busy;
   // Background keepalives must not toggle the visible controls. Foreground
@@ -153,6 +157,7 @@ function update(s) {
   if(s.error) $('message').textContent=ERRORS[s.error]||`Fehler ${s.error}`;
   else if(s.recoveredCorrupt) $('message').textContent='Beschädigte Flash-Records gefunden; betroffene Sessions werden beim Laden markiert.';
   if(showingLive()) describe();
+  if(wizard?.recording&&s.state!==1) cancelCal('Aufzeichnung beendet, Kalibrierung abgebrochen.');
   controls();
 }
 async function action(fn) {
@@ -184,7 +189,7 @@ function draw() {
   if(!points.length){ctx.fillText('Keine Messdaten',30,40);return;}
   const [a,b]=zoom.range(fullRange(points)),vis=points.filter(p=>p.t>=a&&p.t<=b);
   // Thin only the visible window; plot in model axes, samples keep the raw sensor axes.
-  const step=Math.max(1,Math.ceil(vis.length/1500)),p=vis.filter((_,i)=>i%step===0).map(s=>({t:s.t,axes:bodyAxes(s.axes)}));
+  const cal=plotCal()?.cal,step=Math.max(1,Math.ceil(vis.length/1500)),p=vis.filter((_,i)=>i%step===0).map(s=>({t:s.t,axes:bodyAxes(applyCal(cal,s.axes))}));
   let lo=Infinity,hi=-Infinity;
   for(const s of p)for(let i=base;i<base+3;i++){lo=Math.min(lo,s.axes[i]);hi=Math.max(hi,s.axes[i]);}
   if(!p.length){lo=-1;hi=1;}
@@ -244,12 +249,12 @@ function load(parsed) {
 function describe() {
   if(showingLive()) {
     const note=!connected?'nicht verbunden':latest?.previewAvailable||latest?.state===1?'ca. 10 Hz · letzte 50 s · nicht gespeichert':'Firmware sendet Live nur beim Aufzeichnen – xiao_sense hochladen';
-    $('summary').textContent=`Live · ${note}`;draw();return;
+    $('summary').textContent=`Live · ${note}${calNote()}`;draw();return;
   }
   const s=selected();
   const rate=s?.hz?`${s.rateEstimated?'ca. ':''}${s.hz} Hz`:'Rate unbekannt';
   // Date, sample count and completion are already in the session selector.
-  $('summary').textContent=s?`${data.demo?'Demo (synthetisch) · ':''}${data.demo?'':boardLabel(s.board,boards)+' · '}${rate}${s.errors?` · ${s.errors} beschädigte Records, CSV gesperrt`:''}`:'Keine Daten geladen.';
+  $('summary').textContent=s?`${data.demo?'Demo (synthetisch) · ':''}${data.demo?'':boardLabel(s.board,boards)+' · '}${rate}${s.errors?` · ${s.errors} beschädigte Records, CSV gesperrt`:''}${calNote()}`:'Keine Daten geladen.';
   draw();
 }
 function save(blob,name) {const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);}
@@ -260,6 +265,8 @@ function onLive(v) {
   if(!livePoints.length) liveAnchor=Date.now()-us/1000; // wall clock at sensor time 0
   livePoints.push({us,t:liveAnchor+us/1000,axes:s.axes});if(livePoints.length>500)livePoints.shift();
   if(showingLive()&&!paused)draw();
+  if(wizard) {const p=wizard.push(s.axes);showWizard(p);if(p.done) finishCal();}
+  showAttitude(s.axes);
 }
 // Unexpected link loss (e.g. notebook asleep): try to reconnect to the same device
 // without the chooser, with growing pauses for about two minutes.
@@ -287,6 +294,8 @@ async function autoReconnect() {
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)autoReconnect();});
 setInterval(()=>{if(connected&&latest?.pingAvailable&&!busy&&!rudderWorking)device.ping();},5000);
 function onDisconnected() {
+  if(wizard) cancelCal('Verbindung getrennt, Kalibrierung abgebrochen.',false);
+  deviceCal=null;deviceBoard=null;calSupported=false;
   connected=false;showPower(null);if(showingLive())describe();rudderPending=false;showRudders(null);$('rudderMessage').textContent='';boardSessions=null;boardSnapshot=null;renderBoard();$('memory').textContent='—';$('boardInfo').textContent='';$('connection').textContent=switchedOff?'Ausgeschaltet':'Getrennt';if(switchedOff)$('message').textContent='XIAO ist aus · Einschalten: Reset kurz drücken oder USB anstecken.';
   const unexpected=!switchedOff&&!manualDisconnect;switchedOff=false;controls();
   if(unexpected) autoReconnect();
@@ -297,6 +306,7 @@ async function afterConnect() {
   if(!latest.powerAvailable) $('powerInfo').textContent='Akkuanzeige: Firmware 0.2.3 hochladen.';
   const c=config(await device.chars.config.readValue());$('rate').value=c.hz;liveRanges=c;livePoints=[]; // drop points scaled before the readback
   $('connection').textContent=`Verbunden · ${c.board?boardLabel(c.board,boards):'Board-ID ab Firmware 0.2.9'}`;
+  deviceBoard=c.board;calSupported=device.calAvailable;deviceCal=calSupported?await device.readCal():null;if(view)view.reset();showCal();
   if(latest.ruddersAvailable) {showRudders(await device.getRudders(),true);$('rudderMessage').textContent='';}
   else $('rudderMessage').textContent='Rudersteuerung: aktuelle Firmware hochladen.';
   if([0,3].includes(latest.state)&&!rudderState?.active) await refreshBoard();
@@ -343,7 +353,7 @@ $('allCsv').onclick=()=>{
 $('csv').onclick=()=>save(new Blob([csv(selected())],{type:'text/csv;charset=utf-8'}),csvFilename(selected()));
 $('file').onchange=e=>action(async()=>{const f=e.target.files[0];if(f){if(f.size>32*1024*1024)throw Error('CSV größer als 32 MiB');load(parseCsv(await f.text()));}});
 $('session').onchange=()=>{$('source').value='session';resetView();describe();};
-$('source').onchange=()=>{resetView();describe();};$('kind').onchange=()=>draw();
+$('source').onchange=()=>{resetView();describe();};$('kind').onchange=()=>draw();$('calibrated').onchange=()=>describe();
 $('demo').onclick=()=>{
   const bytes=new Uint8Array(32*262),d=new DataView(bytes.buffer);
   for(let i=0;i<262;i++){
@@ -376,6 +386,111 @@ $('rudderNeutral').onclick=()=>action(async()=>{
   const values=rudderValues().map(c=>({...c,pulse:Math.max(c.min,Math.min(c.max,NEUTRAL))}));
   rudderPending=false;showRudders(await device.setRudders(2,values),true);
 });
+// --- IMU calibration (values on the XIAO, copy in boards.csv) and 3D attitude view ---
+let deviceCal=null,deviceBoard=null,calSupported=false,wizard=null,view=null;
+const boardsCal=board=>board?boards.get(board)?.cal||null:null;
+const calDate=s=>s?new Date(s*1000).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}):'Zeit unbekannt';
+// Calibration for live data: XIAO, else boards.csv of the connected board.
+function liveCal() {
+  if(hasCal(deviceCal)) return {cal:deviceCal,from:'XIAO'};
+  const b=boardsCal(deviceBoard);return b?{cal:b,from:'boards.csv'}:null;
+}
+// Plot: only with "abgeglichen"; sessions use their own record (0.3.0+), else boards.csv.
+function plotCal() {
+  if(!$('calibrated').checked) return null;
+  if(showingLive()) return liveCal();
+  const s=selected();if(hasCal(s?.cal)) return {cal:s.cal,from:'Session'};
+  const b=boardsCal(s?.board);return b?{cal:b,from:'boards.csv'}:null;
+}
+function calNote() {
+  if(!$('calibrated').checked) return '';
+  const c=plotCal();return c?` · abgeglichen (${c.from})`:' · kein Abgleich vorhanden, Rohwerte';
+}
+function calText(c) {
+  if(!hasCal(c)) return 'nicht abgeglichen';
+  return `Accel ${c.accel?calDate(c.accelTime):'—'} · Gyro ${c.gyro?calDate(c.gyroTime):'—'}`;
+}
+function showCal() {
+  let info,summary;
+  if(!connected) {info='Nicht verbunden. Live-Lage und Abgleich brauchen den XIAO.';summary='nicht verbunden';}
+  else if(!calSupported) {info='IMU-Abgleich: Firmware 0.3.0 hochladen.';summary='Firmware zu alt';}
+  else {
+    const file=boards.get(deviceBoard),fileCal=boardsCal(deviceBoard);
+    const relation=!deviceBoard?'Board-ID unbekannt':!file?'Board nicht in boards.csv':
+      sameCal(deviceCal,fileCal)?(hasCal(fileCal)?'boards.csv gleich':'auch boards.csv ohne Abgleich'):
+      !hasCal(fileCal)?'boards.csv ohne Abgleich – speichern':!hasCal(deviceCal)?'boards.csv hat einen Abgleich – übertragen?':'boards.csv weicht ab';
+    info=`XIAO: ${calText(deviceCal)} · ${relation}`;summary=hasCal(deviceCal)?'abgeglichen':'kein Abgleich';
+  }
+  $('calInfo').textContent=info;$('calSummary').textContent=summary;calControls();
+}
+function calControls() {
+  const idle=connected&&calSupported&&!busy&&!wizard&&latest?.state===0&&!rudderState?.active;
+  $('calGyro').disabled=!idle;$('calFull').disabled=!idle;$('calCancel').disabled=!wizard;
+  const fileCal=boardsCal(deviceBoard);
+  $('calFromBoards').disabled=!idle||!hasCal(fileCal)||sameCal(fileCal,deviceCal);
+  $('boardsCsv').disabled=!connected||!deviceBoard||!hasCal(deviceCal)||!!wizard;
+}
+function showWizard(p) {
+  $('stillBar').style.width=`${Math.round(p.fraction*100)}%`;
+  if(wizard?.mode==='full') for(const li of $('poses').children) {
+    li.classList.toggle('done',p.captured.includes(li.dataset.key));li.classList.toggle('current',li.dataset.key===p.key&&!p.captured.includes(p.key));
+  }
+  const left=POSE_KEYS.filter(k=>!p.captured.includes(k)).map(poseLabel);
+  $('calStep').textContent=p.done?'Fertig, speichere…':wizard?.mode==='gyro'?'Modell still hinlegen (beliebige Lage), nicht berühren…':
+    p.key&&!p.captured.includes(p.key)?`${poseLabel(p.key)}: still halten…`:`Noch offen: ${left.join(', ')}. Modell in eine dieser Lagen bringen und still anlehnen.`;
+}
+function startCal(mode,recording=false) {
+  wizard=new CalWizard(mode);wizard.recording=recording;
+  $('poses').hidden=mode!=='full';$('stillMeter').hidden=false;$('calPanel').open=true;ensureView();
+  $('poses').replaceChildren(...POSE_KEYS.map(k=>{const li=document.createElement('li');li.dataset.key=k;li.textContent=poseLabel(k);return li;}));
+  showWizard(wizard.progress());controls();
+}
+function endCal() {wizard=null;$('stillMeter').hidden=true;$('poses').hidden=true;controls();}
+function cancelCal(text,stopRecording=true) {
+  const w=wizard;endCal();$('calStep').textContent=text;
+  if(stopRecording&&w?.recording&&latest?.state===1) action(async()=>{update(await device.stop());});
+}
+function finishCal() {
+  const w=wizard;endCal();$('calStep').textContent='Speichere auf dem XIAO…';
+  action(async()=>{
+    try {
+      if(w.recording) {update(await device.stop());if(!rudderState?.active) await refreshBoard();}
+      const next=w.result(deviceCal||emptyCal());
+      deviceCal=await device.writeCal(next);showCal();describe();
+      const fit=w.mode==='full'?` Restfehler ${(next.rms*1000).toFixed(1).replace('.',',')} mg.`:'';
+      $('calStep').textContent=`${w.mode==='gyro'?'Gyro':'Volle'} Kalibrierung gespeichert.${fit} boards.csv speichern und im Repo ersetzen.`;
+      if(w.mode==='full'&&next.rms>0.01) $('message').textContent='Restfehler über 10 mg: Lagen waren nicht ruhig genug. Kalibrierung ggf. wiederholen.';
+    } catch(e) {$('calStep').textContent='Nicht gespeichert.';throw e;}
+  });
+}
+$('calGyro').onclick=()=>startCal('gyro');
+// Full calibration records the raw 104 Hz data as a session (archive, re-evaluable).
+$('calFull').onclick=()=>action(async()=>{livePoints=[];update(await device.start(104));startCal('full',true);});
+$('calCancel').onclick=()=>cancelCal('Kalibrierung abgebrochen.');
+$('calFromBoards').onclick=()=>{
+  if(hasCal(deviceCal)&&!confirm('Abgleich auf dem XIAO durch die Werte aus boards.csv ersetzen?')) return;
+  action(async()=>{deviceCal=await device.writeCal(boardsCal(deviceBoard));showCal();describe();$('calStep').textContent='Werte aus boards.csv auf den XIAO übertragen.';});
+};
+$('boardsCsv').onclick=()=>{
+  const next=new Map(boards),entry=next.get(deviceBoard)||{name:deviceBoard,note:'neues Board, Name ergänzen'};
+  next.set(deviceBoard,{...entry,cal:deviceCal});
+  save(new Blob([serializeBoards(next)],{type:'text/csv;charset=utf-8'}),'boards.csv');
+  boards=next;showCal();describe();
+};
+function ensureView() {
+  if(view!==null) return;
+  try {view=new AttitudeView($('attitude'));view.load('stabarrow.bin').catch(e=>{$('attitudeText').textContent=e.message;});}
+  catch(e) {view=false;$('attitudeText').textContent=e.message;}
+}
+function showAttitude(axes) {
+  if(!$('calPanel').open) return;
+  const down=downVector(liveCal()?.cal,axes);
+  if(view) view.update(down);
+  if(down) {const {roll,pitch}=rollPitch(down);$('attitudeText').textContent=`Rollen ${roll.toFixed(0)}° · Nicken ${pitch.toFixed(0)}°`;}
+}
+$('calPanel').addEventListener('toggle',()=>{if($('calPanel').open){ensureView();if(view)view.render();}});
+addEventListener('resize',()=>{if(view&&$('calPanel').open) view.render();});
+showCal();
 if(!isSecureContext||!navigator.bluetooth)$('hint').textContent='Bluetooth nicht verfügbar: Chrome über localhost (PC) oder HTTPS (Android). Demo und CSV funktionieren.';
 draw();controls();
 // Offline support and installation (HTTPS or localhost only); the page works without it.

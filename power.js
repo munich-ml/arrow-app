@@ -1,7 +1,8 @@
 import {view} from './protocol.js';
 export const LOW_MV=3500,DIP_MV=150;
-// Rough resting-voltage curve of a 1S LiPo; only an estimate, load and age shift it.
-const CURVE=[[3300,0],[3500,3],[3600,8],[3700,22],[3750,35],[3800,45],[3900,62],[4000,78],[4100,90],[4200,100]];
+// Measured discharge of the 401020 cell under board load (2026-11-09/10: 4.17 V at 17:16 to 3.3 V
+// at 00:12, ~7 h); percent = remaining time to 3.3 V. Below ~3.45 V the voltage collapses.
+const CURVE=[[3300,0],[3450,3],[3500,8],[3550,15],[3600,25],[3650,39],[3700,50],[3800,65],[3900,76],[4000,85],[4100,93],[4200,100]];
 export function power(value) {
   const d=view(value);
   if(d.byteLength!==8) throw Error('Unbekanntes Akkuformat');
