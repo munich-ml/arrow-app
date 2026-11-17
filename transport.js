@@ -1,5 +1,5 @@
-import {UUID,status,startCommand,powerOffCommand,PING,CAPACITY,ERRORS} from './protocol.js';
-import {encodeCal,decodeCal} from './imucal.js';
+import {UUID,status,startCommand,armCommand,powerOffCommand,PING,CAPACITY,ERRORS,RATES,config,configCommand} from './protocol.js';
+import {encodeCal,decodeCal,CAL_SIZE} from './imucal.js';
 import {WindowReceiver,windowCommand,WINDOW_SIZE} from './bulk.js';
 import {rudderCommand,rudderStatus} from './rudders.js';
 import {power} from './power.js';
@@ -99,13 +99,15 @@ export class ArrowDevice {
   get calAvailable() {return !!this.chars.cal;}
   async readCal() {
     if(!this.chars.cal) throw Error('IMU-Abgleich benötigt Firmware 0.3.0. Bitte xiao_sense hochladen.');
-    return decodeCal(await this.chars.cal.readValue());
+    const v=await this.chars.cal.readValue();this.calSize=v.byteLength; // 36 from 0.3.5, else 28
+    return decodeCal(v);
   }
-  // Writes all 28 bytes, then checks the status error and the read-back value.
+  // Writes the whole value (36 bytes, 28 for firmware before 0.3.5), then checks the status
+  // error and the read-back value.
   writeCal(cal) { return this.exclusive(async()=>{
     if(!this.chars.cal) throw Error('IMU-Abgleich benötigt Firmware 0.3.0. Bitte xiao_sense hochladen.');
     if((await this.getStatus()).state!==0) throw Error('Abgleich nur im Leerlauf speichern');
-    const bytes=encodeCal(cal);
+    const bytes=encodeCal(cal,this.calSize||CAL_SIZE);
     await this.chars.cal.writeValueWithResponse(bytes);
     await pause(150);
     const s=await this.getStatus();
@@ -125,22 +127,40 @@ export class ArrowDevice {
   }
   // hz: rate chosen in the app. Applied before START when the board still has another
   // one (Config is RAM only, 104 Hz after boot from 0.2.6, 52 Hz before), so the header records what was chosen.
-  start(hz) { return this.exclusive(async()=>{
+  start(hz,oversample) { return this.exclusive(async()=>{
     const before=await this.getStatus(); if(before.state!==0) throw Error('Start nur im Leerlauf');
-    if(hz!==undefined&&(await this.chars.config.readValue()).getUint16(0,true)!==hz) await this.applyRate(hz);
+    await this.ensureConfig(hz,oversample);
     await this.write(startCommand());
     return this.waitFor(s=>s.state===1&&s.session===before.session+1);
   }); }
+  // Auto mode (firmware 0.3.3): armed (state 5); sessions start at the launch by themselves.
+  arm(hz,oversample) { return this.exclusive(async()=>{
+    const before=await this.getStatus(); if(before.state!==0) throw Error('Auto nur im Leerlauf');
+    const c=config(await this.chars.config.readValue());
+    if(c.oversample===null) throw Error('Auto-Modus benötigt Firmware 0.3.3. Bitte xiao_sense hochladen.');
+    await this.ensureConfig(hz,oversample);
+    await this.write(armCommand());
+    return this.waitFor(s=>s.state===5);
+  }); }
   stop() { return this.exclusive(async()=>{await this.write(Uint8Array.of(2)); return this.waitFor(s=>s.state===0);}); }
-  setRate(hz) { return this.exclusive(()=>this.applyRate(hz)); }
-  async applyRate(hz) {
-    if(![26,52,104].includes(hz)) throw Error('Ungültige Rate');
+  setRate(hz,oversample) { return this.exclusive(()=>this.applyRate(hz,oversample)); }
+  // Applies rate and oversampling only where they differ from the board (Config is RAM only).
+  async ensureConfig(hz,oversample) {
+    if(hz===undefined) return;
+    const c=config(await this.chars.config.readValue());
+    if(c.hz!==hz||(c.oversample!==null&&oversample!==undefined&&c.oversample!==oversample)) await this.applyRate(hz,oversample,c);
+  }
+  async applyRate(hz,oversample,current) {
+    if(!RATES.includes(hz)) throw Error('Ungültige Rate');
     if((await this.getStatus()).state!==0) throw Error('Konfiguration nur im Leerlauf');
-    await this.chars.config.writeValueWithResponse(Uint8Array.of(hz,0));
+    const before=current??config(await this.chars.config.readValue());
+    // Older firmware (no flags in the readback) accepts only the 2-byte form and no 208 Hz.
+    const flags=before.oversample===null?undefined:oversample;
+    await this.chars.config.writeValueWithResponse(configCommand(hz,flags)); // u16 LE (+ flags)
     // Callback queues work; wait for the applied configuration, not the write ACK.
     await pause(100);
-    const s=await this.getStatus(),v=await this.chars.config.readValue();
-    if(s.error||v.getUint16(0,true)!==hz) throw Error('Konfiguration nicht übernommen');
+    const s=await this.getStatus(),c=config(await this.chars.config.readValue());
+    if(s.error||c.hz!==hz||(flags!==undefined&&c.oversample!==flags)) throw Error('Konfiguration nicht übernommen');
   }
   powerOff() { return this.exclusive(async()=>{
     const s=await this.getStatus();

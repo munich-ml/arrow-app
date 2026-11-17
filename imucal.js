@@ -1,18 +1,23 @@
 // IMU calibration in sensor axes (docs: XIAO_firmware/docs/PROTOCOL.md, "IMU-Abgleich").
 //   a_cal = (a_raw - offset) * scale [g],  g_cal = g_raw - bias [°/s]
+// From firmware 0.3.5 also the IMU clock: t_true = t_sensor / clock, clock-1 in 1e-5.
 // Fixed point as on the XIAO: offset 0.1 mg, scale-1 1e-5, bias 0.001 °/s. Reference:
 // XIAO_eval/arrow_eval/dsp/imucal.py; fitAccel is checked against tests/vectors/imucal_fit.csv.
 import {bodyAxes} from './mount.js';
-export const CAL_SIZE=28, OFFSET_LSB=1e-4, SCALE_LSB=1e-5, BIAS_LSB=1e-3;
-const LIMITS={offsetQ:2500,scaleQ:10000,biasQ:25000};
+// GATT value: 36 bytes from firmware 0.3.5, 28 bytes before (no clock part).
+export const CAL_SIZE=36, CAL_SIZE_V1=28, OFFSET_LSB=1e-4, SCALE_LSB=1e-5, BIAS_LSB=1e-3, CLOCK_LSB=1e-5;
+const LIMITS={offsetQ:2500,scaleQ:10000,biasQ:25000},CLOCK_MAX_Q=5000,CLOCK_ONE=100000;
 export const POSE_KEYS=['+x','-x','+y','-y','+z','-z'];
-export const emptyCal=()=>({accel:false,gyro:false,offsetQ:[0,0,0],scaleQ:[0,0,0],biasQ:[0,0,0],accelTime:0,gyroTime:0});
+export const emptyCal=()=>({accel:false,gyro:false,offsetQ:[0,0,0],scaleQ:[0,0,0],biasQ:[0,0,0],accelTime:0,gyroTime:0,clock:false,clockQ:0,clockTime:0});
 const q=(v,lsb)=>Math.round(v/lsb)+0;
 export function checkCal(c) {
   for(const [key,limit] of Object.entries(LIMITS))
     if(c[key].length!==3||c[key].some(v=>!Number.isInteger(v)||Math.abs(v)>limit)) throw Error('Abgleichwert außerhalb des plausiblen Bereichs');
   if(!c.accel&&(c.offsetQ.some(Boolean)||c.scaleQ.some(Boolean))) throw Error('Accel nicht abgeglichen, Werte müssen 0 sein');
   if(!c.gyro&&c.biasQ.some(Boolean)) throw Error('Gyro nicht abgeglichen, Werte müssen 0 sein');
+  const q=c.clockQ??0;
+  if(!Number.isInteger(q)||Math.abs(q)>CLOCK_MAX_Q) throw Error('IMU-Takt außerhalb des plausiblen Bereichs (±5 %)');
+  if(!c.clock&&q) throw Error('Takt nicht abgeglichen, Wert muss 0 sein');
   return c;
 }
 // Replace the accel part (offset g, scale) and/or the gyro part (bias °/s) of cal.
@@ -22,33 +27,54 @@ export function withAccel(cal,offset,scale,time=Math.floor(Date.now()/1000)) {
 export function withGyro(cal,bias,time=Math.floor(Date.now()/1000)) {
   return checkCal({...cal,gyro:true,biasQ:bias.map(v=>q(v,BIAS_LSB)),gyroTime:time});
 }
-export const physical=c=>({offset:c.offsetQ.map(v=>v*OFFSET_LSB),scale:c.scaleQ.map(v=>1+v*SCALE_LSB),bias:c.biasQ.map(v=>v*BIAS_LSB)});
-export const hasCal=c=>!!(c&&(c.accel||c.gyro));
+// IMU clock: sensor us per true us (monitor Clock=), e.g. 1.01308.
+export function withClock(cal,clock,time=Math.floor(Date.now()/1000)) {
+  return checkCal({...emptyCal(),...cal,clock:true,clockQ:q(clock-1,CLOCK_LSB),clockTime:time});
+}
+export const physical=c=>({offset:c.offsetQ.map(v=>v*OFFSET_LSB),scale:c.scaleQ.map(v=>1+v*SCALE_LSB),bias:c.biasQ.map(v=>v*BIAS_LSB),clock:1+(c.clock?c.clockQ:0)*CLOCK_LSB});
+export const hasCal=c=>!!(c&&(c.accel||c.gyro||c.clock));
 // Same values (flags and fixed point); times are informative only.
 export const sameCal=(a,b)=>{
   const x=a||emptyCal(),y=b||emptyCal();
-  return x.accel===y.accel&&x.gyro===y.gyro&&['offsetQ','scaleQ','biasQ'].every(k=>x[k].every((v,i)=>v===y[k][i]));
+  return x.accel===y.accel&&x.gyro===y.gyro&&!!x.clock===!!y.clock&&(x.clockQ??0)===(y.clockQ??0)&&
+    ['offsetQ','scaleQ','biasQ'].every(k=>x[k].every((v,i)=>v===y[k][i]));
 };
-// 28 bytes: u8 version 1, u8 flags, 9 x i16, u32 accel time, u32 gyro time. 20 bytes: block only.
-export function encodeCal(c) {
+// 36 bytes: u8 version 1, u8 flags, 9 x i16, u32 accel time, u32 gyro time, i16 clock-1,
+// u8 clock flags (bit 0), u8 0, u32 clock time. size 28: firmware before 0.3.5 (no clock part).
+export function encodeCal(c,size=CAL_SIZE) {
   checkCal(c);
-  const b=new Uint8Array(CAL_SIZE),d=new DataView(b.buffer);
+  if(size===CAL_SIZE_V1&&c.clock) throw Error('IMU-Takt auf dem XIAO benötigt Firmware 0.3.5. Bitte xiao_sense hochladen.');
+  if(size!==CAL_SIZE&&size!==CAL_SIZE_V1) throw Error('Abgleich: 28 oder 36 Byte');
+  const b=new Uint8Array(size),d=new DataView(b.buffer);
   b[0]=1;b[1]=(c.accel?1:0)|(c.gyro?2:0);
   [...c.offsetQ,...c.scaleQ,...c.biasQ].forEach((v,i)=>d.setInt16(2+2*i,v,true));
   d.setUint32(20,c.accelTime>>>0,true);d.setUint32(24,c.gyroTime>>>0,true);
+  if(size===CAL_SIZE) {d.setInt16(28,c.clock?c.clockQ:0,true);b[30]=c.clock?1:0;d.setUint32(32,c.clock?c.clockTime>>>0:0,true);}
   return b;
 }
-export function decodeCal(value,offset=0,length=value.byteLength-offset) {
+// length 20: block of a session record, recordClock = i16 from record bytes 2..3 (0.3.5+).
+export function decodeCal(value,offset=0,length=value.byteLength-offset,recordClock=0) {
   const d=value instanceof DataView?value:new DataView(value.buffer??value,value.byteOffset??0,value.byteLength);
-  if(length!==20&&length!==CAL_SIZE) throw Error('Abgleich: 20 oder 28 Byte');
+  if(length!==20&&length!==CAL_SIZE_V1&&length!==CAL_SIZE) throw Error('Abgleich: 20, 28 oder 36 Byte');
   const at=i=>d.getUint8(offset+i);
   if(at(0)!==1||(at(1)&~3)) throw Error('Abgleich: Version/Flags');
-  const v=Array.from({length:9},(_,i)=>d.getInt16(offset+2+2*i,true));
+  const v=Array.from({length:9},(_,i)=>d.getInt16(offset+2+2*i,true)),times=length>=CAL_SIZE_V1;
   const c={accel:!!(at(1)&1),gyro:!!(at(1)&2),offsetQ:v.slice(0,3),scaleQ:v.slice(3,6),biasQ:v.slice(6,9),
-    accelTime:length===CAL_SIZE?d.getUint32(offset+20,true):0,gyroTime:length===CAL_SIZE?d.getUint32(offset+24,true):0};
+    accelTime:times?d.getUint32(offset+20,true):0,gyroTime:times?d.getUint32(offset+24,true):0,
+    clock:!!recordClock,clockQ:recordClock,clockTime:0};
+  if(length===CAL_SIZE) {
+    if((at(30)&~1)||at(31)) throw Error('Abgleich: Takt-Flags');
+    c.clock=!!(at(30)&1);c.clockQ=d.getInt16(offset+28,true);c.clockTime=c.clock?d.getUint32(offset+32,true):0;
+  }
   if(!c.accel) c.accelTime=0;
   if(!c.gyro) c.gyroTime=0;
   return checkCal(c);
+}
+// Sensor time -> true time in us: round(us * 1e5 / (1e5 + clockQ)), integer as on the XIAO
+// (ImuCalF::timeUs) and in imucal.true_time_us; exact up to about 9e10 us (25 h).
+export function trueTimeUs(c,us) {
+  const den=CLOCK_ONE+(c?.clock?c.clockQ:0);
+  return den===CLOCK_ONE?us:Math.floor((us*CLOCK_ONE+Math.floor(den/2))/den);
 }
 // axes: gx,gy,gz,ax,ay,az (raw); an uncalibrated part stays unchanged.
 export function applyCal(c,axes) {

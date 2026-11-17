@@ -1,5 +1,5 @@
 import {ArrowDevice} from './transport.js';
-import {decode,csv,csvAll,live,config,LEGACY_RANGES,ERRORS,crc32,exportable,damageReport} from './protocol.js';
+import {decode,csv,csvAll,live,config,LEGACY_RANGES,ERRORS,STATE_NAMES,crc32,exportable,damageReport} from './protocol.js';
 import {parseCsv} from './csv-import.js';
 import {sessionLabel,sessionDate,csvFilename,allCsvFilename} from './naming.js';
 import {validChannels,NEUTRAL} from './rudders.js';
@@ -8,7 +8,7 @@ import {BatteryHistory,segments,BUCKET_MS} from './battery-history.js';
 import {ticks,label,ZoomView} from './timeaxis.js';
 import {bodyAxes,BODY_LABELS} from './mount.js';
 import {parseBoards,boardLabel,serializeBoards} from './boards.js';
-import {CalWizard,hasCal,sameCal,emptyCal,applyCal,downVector,poseLabel,POSE_KEYS} from './imucal.js';
+import {CalWizard,hasCal,sameCal,emptyCal,applyCal,downVector,poseLabel,POSE_KEYS,trueTimeUs,physical} from './imucal.js';
 import {AttitudeView,rollPitch} from './view3d.js';
 // Board LUT (boards.csv, shared with XIAO_eval); missing or broken file: IDs stay hex.
 let boards=new Map();
@@ -126,7 +126,9 @@ function controls() {
   $('disconnect').disabled=!connected;
   $('powerOff').disabled=!connected||busy||!latest?.offAvailable||![0,3].includes(latest?.state)||!!rudderState?.active;
   for(const id of ['start','download','configure','rate']) $(id).disabled=!connected||busy||!!wizard||latest?.state!==0;
-  $('stop').disabled=!connected||busy||!!wizard||latest?.state!==1;
+  $('auto').disabled=$('start').disabled||!autoSupported;
+  $('oversample').disabled=$('start').disabled||!autoSupported;
+  $('stop').disabled=!connected||busy||!!wizard||![1,5,6].includes(latest?.state);
   $('erase').disabled=!connected||busy||!!wizard||![0,3].includes(latest?.state);
   if(wizard) $('powerOff').disabled=true;
   calControls();
@@ -147,7 +149,7 @@ function controls() {
   $('allCsv').disabled=!exportable(data.sessions).some(s=>s.samples.length); $('csv').disabled=!selected()?.samples.length||!!selected()?.errors;
 }
 function update(s) {
-  latest=s; $('state').textContent=s.state===3?`Fehler: ${ERRORS[s.error]||'Hardwareinitialisierung'} (${s.error})`:['Bereit','Aufzeichnung','Löschen…','Fehler','Download'][s.state];
+  latest=s; $('state').textContent=s.state===3?`Fehler: ${ERRORS[s.error]||'Hardwareinitialisierung'} (${s.error})`:STATE_NAMES[s.state];
   $('memory').textContent=`${(s.used/1024).toFixed(1)} / 2048 KiB`;
   $('samples').textContent=`${s.count} / ${s.dropped}`;
   if(boardSnapshot && (s.used!==boardSnapshot.used||s.session!==boardSnapshot.session)) {
@@ -176,8 +178,9 @@ const PL=65,PR=20,PT=25,PB=40;
 function plotData() {
   if(showingLive()) return {points:paused||livePoints,wall:true};
   const s=selected();if(!s) return {points:[],wall:true};
-  const wall=s.epoch>0;
-  return {points:s.samples.map(p=>({t:(wall?s.epoch:0)+p.us/1000,axes:p.axes})),wall};
+  // With the IMU clock calibrated (from 0.3.5) the time axis is true time.
+  const wall=s.epoch>0,cal=plotCal()?.cal;
+  return {points:s.samples.map(p=>({t:(wall?s.epoch:0)+trueTimeUs(cal,p.us)/1000,axes:p.axes})),wall};
 }
 const fullRange=points=>points.length?[points[0].t,Math.max(points.at(-1).t,points[0].t+1)]:null;
 function draw() {
@@ -248,11 +251,11 @@ function load(parsed) {
 }
 function describe() {
   if(showingLive()) {
-    const note=!connected?'nicht verbunden':latest?.previewAvailable||latest?.state===1?'ca. 10 Hz · letzte 50 s · nicht gespeichert':'Firmware sendet Live nur beim Aufzeichnen – xiao_sense hochladen';
+    const note=!connected?'nicht verbunden':latest?.previewAvailable||[1,5,6].includes(latest?.state)?'ca. 10 Hz · letzte 50 s · nicht gespeichert':'Firmware sendet Live nur beim Aufzeichnen – xiao_sense hochladen';
     $('summary').textContent=`Live · ${note}${calNote()}`;draw();return;
   }
   const s=selected();
-  const rate=s?.hz?`${s.rateEstimated?'ca. ':''}${s.hz} Hz`:'Rate unbekannt';
+  const rate=s?.hz?`${s.rateEstimated?'ca. ':''}${s.hz} Hz${s.factor>1?` (Mittel aus ${s.factor} × ${s.internalHz} Hz)`:s.hz===833?' roh (Prüfmodus)':''}`:'Rate unbekannt';
   // Date, sample count and completion are already in the session selector.
   $('summary').textContent=s?`${data.demo?'Demo (synthetisch) · ':''}${data.demo?'':boardLabel(s.board,boards)+' · '}${rate}${s.errors?` · ${s.errors} beschädigte Records, CSV gesperrt`:''}${calNote()}`:'Keine Daten geladen.';
   draw();
@@ -260,7 +263,7 @@ function describe() {
 function save(blob,name) {const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);}
 let liveRanges=LEGACY_RANGES; // from the config readback after connecting
 function onLive(v) {
-  const s=live(v,liveRanges),us=s.seconds*1e6;
+  const s=live(v,liveRanges),us=trueTimeUs(liveCal()?.cal,Math.round(s.seconds*1e6)); // true time with IMU clock
   if(livePoints.length&&us<livePoints.at(-1).us)livePoints=[]; // IMU restart resets the time base
   if(!livePoints.length) liveAnchor=Date.now()-us/1000; // wall clock at sensor time 0
   livePoints.push({us,t:liveAnchor+us/1000,axes:s.axes});if(livePoints.length>500)livePoints.shift();
@@ -295,7 +298,7 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)autoReconn
 setInterval(()=>{if(connected&&latest?.pingAvailable&&!busy&&!rudderWorking)device.ping();},5000);
 function onDisconnected() {
   if(wizard) cancelCal('Verbindung getrennt, Kalibrierung abgebrochen.',false);
-  deviceCal=null;deviceBoard=null;calSupported=false;
+  deviceCal=null;deviceBoard=null;calSupported=false;autoSupported=false;
   connected=false;showPower(null);if(showingLive())describe();rudderPending=false;showRudders(null);$('rudderMessage').textContent='';boardSessions=null;boardSnapshot=null;renderBoard();$('memory').textContent='—';$('boardInfo').textContent='';$('connection').textContent=switchedOff?'Ausgeschaltet':'Getrennt';if(switchedOff)$('message').textContent='XIAO ist aus · Einschalten: Reset kurz drücken oder USB anstecken.';
   const unexpected=!switchedOff&&!manualDisconnect;switchedOff=false;controls();
   if(unexpected) autoReconnect();
@@ -305,6 +308,7 @@ async function afterConnect() {
   livePoints=[];resetView();$('source').value='live';describe();
   if(!latest.powerAvailable) $('powerInfo').textContent='Akkuanzeige: Firmware 0.2.3 hochladen.';
   const c=config(await device.chars.config.readValue());$('rate').value=c.hz;liveRanges=c;livePoints=[]; // drop points scaled before the readback
+  autoSupported=c.oversample!==null; if(autoSupported) $('oversample').checked=c.oversample; // firmware 0.3.3
   $('connection').textContent=`Verbunden · ${c.board?boardLabel(c.board,boards):'Board-ID ab Firmware 0.2.9'}`;
   deviceBoard=c.board;calSupported=device.calAvailable;deviceCal=calSupported?await device.readCal():null;if(view)view.reset();showCal();
   if(latest.ruddersAvailable) {showRudders(await device.getRudders(),true);$('rudderMessage').textContent='';}
@@ -324,10 +328,12 @@ $('powerOff').onclick=()=>{
   if(!confirm('XIAO ausschalten? Einschalten danach mit dem Reset-Taster oder durch Anstecken von USB.'))return;
   action(async()=>{switchedOff=true;try {await device.powerOff();}catch(e) {switchedOff=false;throw e;}});
 };
-$('start').onclick=()=>action(async()=>{livePoints=[];update(await device.start(Number($('rate').value)));});
+const oversampleChoice=()=>autoSupported?$('oversample').checked:undefined;
+$('start').onclick=()=>action(async()=>{livePoints=[];update(await device.start(Number($('rate').value),oversampleChoice()));});
+$('auto').onclick=()=>action(async()=>{livePoints=[];update(await device.arm(Number($('rate').value),oversampleChoice()));});
 $('stop').onclick=()=>action(async()=>{update(await device.stop());if(!rudderState?.active) await refreshBoard();});
 $('refreshSessions').onclick=()=>action(refreshBoard);
-$('configure').onclick=()=>action(()=>device.setRate(Number($('rate').value)));
+$('configure').onclick=()=>action(()=>device.setRate(Number($('rate').value),oversampleChoice()));
 $('download').onclick=()=>action(async()=>{
   abort=new AbortController();$('cancel').disabled=false;
   $('progress').textContent='Vorbereiten…';
@@ -387,7 +393,7 @@ $('rudderNeutral').onclick=()=>action(async()=>{
   rudderPending=false;showRudders(await device.setRudders(2,values),true);
 });
 // --- IMU calibration (values on the XIAO, copy in boards.csv) and 3D attitude view ---
-let deviceCal=null,deviceBoard=null,calSupported=false,wizard=null,view=null;
+let deviceCal=null,deviceBoard=null,calSupported=false,autoSupported=false,wizard=null,view=null;
 const boardsCal=board=>board?boards.get(board)?.cal||null:null;
 const calDate=s=>s?new Date(s*1000).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}):'Zeit unbekannt';
 // Calibration for live data: XIAO, else boards.csv of the connected board.
@@ -408,7 +414,7 @@ function calNote() {
 }
 function calText(c) {
   if(!hasCal(c)) return 'nicht abgeglichen';
-  return `Accel ${c.accel?calDate(c.accelTime):'—'} · Gyro ${c.gyro?calDate(c.gyroTime):'—'}`;
+  return `Accel ${c.accel?calDate(c.accelTime):'—'} · Gyro ${c.gyro?calDate(c.gyroTime):'—'} · Takt ${c.clock?`${physical(c).clock.toFixed(5)} (${calDate(c.clockTime)})`:'—'}`;
 }
 function showCal() {
   let info,summary;

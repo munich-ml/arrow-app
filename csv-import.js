@@ -49,15 +49,16 @@ export function parseCsv(text) {
     const epoch=utc(values.utc_approx,'utc_approx');
     const board=(values.board_id??'').toLowerCase();
     if(board&&!/^[0-9a-f]{8}$/.test(board))throw Error('Ungültige CSV-board_id');
-    const metadata=[values.session_start_utc_approx??'',values.sample_rate_hz??'',values.session_complete??'',values.session_sample_count??''];
+    const metadata=[values.session_start_utc_approx??'',values.sample_rate_hz??'',values.session_complete??'',values.session_sample_count??'',values.internal_rate_hz??''];
     // Session IDs are unique per board only: board + session is the key.
     const key=`${board}|${id}`;
     let session=result.get(key);
     if(!session) {
-      const [start,hz,complete,count]=metadata;
+      const [start,hz,complete,count,internal]=metadata;
       if(!['','true','false'].includes(complete))throw Error('Ungültiger CSV-Sessionabschluss');
       session={id,board:board||null,epoch:utc(start,'session_start_utc_approx')??(epoch===null?0:epoch-us/1000),
         hz:hz?number(hz,'sample_rate_hz',{min:Number.MIN_VALUE}):null,rateEstimated:!hz,
+        ...(internal?{internalHz:number(internal,'internal_rate_hz',{min:Number.MIN_VALUE})}:{}),
         complete:complete===''?null:complete==='true',samples:[],dropped:null,
         _metadata:metadata.join('|'),_expected:count?number(count,'session_sample_count',{integer:true,min:1}):null};
       result.set(key,session);
@@ -65,7 +66,11 @@ export function parseCsv(text) {
     if(metadata.join('|')!==session._metadata)throw Error('Widersprüchliche CSV-Sessionmetadaten');
     if(session.samples.length&&us<=session.samples.at(-1).us)throw Error('CSV-Sensorzeiten sind doppelt oder rückwärts');
     if(metadata[0]&&epoch!==null&&Math.abs(epoch-(session.epoch+us/1000))>1.001)throw Error('CSV-Zeit stimmt nicht mit dem Sessionstart überein');
-    session.samples.push({us,axes:AXES.map(axis=>number(values[axis],axis))});
+    // Optional from 0.3.1: saturation mask and averaged raw values per sample.
+    const sample={us,axes:AXES.map(axis=>number(values[axis],axis))};
+    if(values.sat_mask) sample.sat=number(values.sat_mask,'sat_mask',{integer:true,min:0,max:63});
+    if(values.avg_n) sample.n=number(values.avg_n,'avg_n',{integer:true,min:1,max:255});
+    session.samples.push(sample);
   }
   for(const session of result.values()) {
     if(session._expected!==null&&session._expected!==session.samples.length)throw Error('CSV unvollständig: Sample-Anzahl stimmt nicht');

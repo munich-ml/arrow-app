@@ -17,11 +17,14 @@ export function view(value) {
 export function status(value) {
   const d=view(value); if(d.byteLength!==20||![1,2].includes(d.getUint8(0))) throw Error('Unbekanntes Statusformat');
   const s={version:d.getUint8(0),state:d.getUint8(1),error:d.getUint8(2),recoveredCorrupt:!!(d.getUint8(3)&1),bulkAvailable:!!(d.getUint8(3)&2),catalogAvailable:!!(d.getUint8(3)&4),ruddersAvailable:!!(d.getUint8(3)&8),previewAvailable:!!(d.getUint8(3)&16),powerAvailable:!!(d.getUint8(3)&32),offAvailable:!!(d.getUint8(3)&64),pingAvailable:!!(d.getUint8(3)&128),used:d.getUint32(4,true),session:d.getUint32(8,true),count:d.getUint32(12,true),dropped:d.getUint32(16,true)};
-  if(s.state>4||(s.version===1&&s.state>3)||s.used>CAPACITY||s.used%32) throw Error('Ungültiger Status'); return s;
+  // States 5 (armed) and 6 (recording in auto mode) from firmware 0.3.3.
+  if(s.state>6||(s.version===1&&s.state>3)||s.used>CAPACITY||s.used%32) throw Error('Ungültiger Status'); return s;
 }
 export function startCommand(epoch=Date.now()) {
   const b=new Uint8Array(9); b[0]=1; new DataView(b.buffer).setBigUint64(1,BigInt(epoch),true); return b;
 }
+// ARM (auto mode, from 0.3.3): like START, the session begins at the detected launch.
+export function armCommand(epoch=Date.now()) { const b=startCommand(epoch); b[0]=11; return b; }
 export const PING=Uint8Array.of(10); // contact only, keeps the firmware's 90 s app lease
 export const powerOffCommand=()=>Uint8Array.of(9,0x4f,0x46,0x46,0x21); // "OFF!"
 export function readCommand(offset) {
@@ -37,11 +40,28 @@ export function ranges(accelG,gyroDps100) {
   return {accelG,gyroDps100};
 }
 // Config readback: u16 rate, from 0.2.5 also accel range (g) and gyro range /100,
-// from 0.2.9 the board ID (u32, lower half of the nRF52 DEVICEID).
+// from 0.2.9 the board ID (u32, lower half of the nRF52 DEVICEID), from 0.3.3 flags
+// (byte 8, bit 0 oversampling; null = older firmware without the switch).
 export function config(value) {
   const d=view(value); if(d.byteLength<2) throw Error('Config-Länge');
   return {hz:d.getUint16(0,true),...(d.byteLength>=4?ranges(d.getUint8(2),d.getUint8(3)):LEGACY_RANGES),
-    board:d.byteLength>=8?boardHex(d.getUint32(4,true)):null};
+    board:d.byteLength>=8?boardHex(d.getUint32(4,true)):null,
+    oversample:d.byteLength>=9?!!(d.getUint8(8)&1):null};
+}
+// Config write: 2 bytes (rate) or, from 0.3.3, 3 bytes with the flags.
+export function configCommand(hz,oversample) {
+  return oversample===undefined||oversample===null?Uint8Array.of(hz&255,hz>>8):Uint8Array.of(hz&255,hz>>8,oversample?1:0);
+}
+// Stored rates the app can choose (from firmware 0.3.3 also 208 Hz). With oversampling the
+// sensor runs at 208 Hz and each sample is the mean of 208/rate raw values.
+export const RATES=[26,52,104,208];
+// Rates in older logs too: 833 Hz raw test mode of 0.3.1/0.3.2.
+const LOG_RATES=[...RATES,833];
+export const STATE_NAMES=['Bereit','Aufzeichnung','Löschen…','Fehler','Download','Auto: scharf','Auto: Aufzeichnung'];
+// Raw value at the end of the range (board: accel clipped at -32764); same rule as the firmware.
+export const SAT_LIMIT=32760;
+export function satMask(d,offset) {
+  let m=0; for(let i=0;i<6;i++) { const v=d.getInt16(offset+2*i,true); if(v>=SAT_LIMIT||v<=-SAT_LIMIT) m|=1<<i; } return m;
 }
 export function axes(d,offset,r=LEGACY_RANGES) {
   const g=GYRO_LSB_DPS[r.gyroDps100],a=ACCEL_LSB_G[r.accelG];
@@ -66,18 +86,23 @@ export function decode(value) {
     if(b[1]!==1||type<1||type>4||crc32(b.subarray(0,28))!==d.getUint32(o+28,true)) { fail(o,b,'CRC/Version/Typ'); current=null; continue; }
     if(type===1) {
       const hz=d.getUint16(o+16,true),epoch=d.getBigUint64(o+8,true);
-      if(![26,52,104].includes(hz)||!(b[18] in ACCEL_LSB_G)||!(b[19] in GYRO_LSB_DPS)||d.getUint32(o+20,true)!==25||epoch>8640000000000000n) { fail(o,b,'Header'); current=null; continue; }
-      current=owner={id,board:boardHex(d.getUint32(o+24,true)),epoch:Number(epoch),hz,ranges:ranges(b[18],b[19]),cal:null,samples:[],complete:false,dropped:null,errors:0}; sessions.push(current);
+      const factor=b[2]; // averaging factor from 0.3.1, 0 = older firmware (raw samples)
+      if(!LOG_RATES.includes(hz)||![0,1,2,4,8].includes(factor)||(hz===833&&factor!==1)||!(b[18] in ACCEL_LSB_G)||!(b[19] in GYRO_LSB_DPS)||d.getUint32(o+20,true)!==25||epoch>8640000000000000n) { fail(o,b,'Header'); current=null; continue; }
+      current=owner={id,board:boardHex(d.getUint32(o+24,true)),epoch:Number(epoch),hz,factor:factor||1,internalHz:hz*(factor||1),ranges:ranges(b[18],b[19]),cal:null,samples:[],complete:false,dropped:null,errors:0}; sessions.push(current);
     } else if(!current||current.id!==id||current.complete) fail(o,b,'Record ohne offene Session');
     else if(type===4) {
       // Calibration valid at START (firmware 0.3.0+), directly after the header.
       if(current.samples.length||current.cal) fail(o,b,'Abgleich an falscher Stelle');
-      else try {current.cal=decodeCal(d,o+8,20);} catch {fail(o,b,'Abgleich');}
+      // From 0.3.5 bytes 2..3 = IMU clock (i16 clock-1 in 1e-5, 0 = not calibrated).
+      else try {current.cal=decodeCal(d,o+8,20,d.getInt16(o+2,true));} catch {fail(o,b,'Abgleich');}
     }
     else if(type===2) {
       const us=d.getBigUint64(o+8,true);
       if(us>BigInt(Number.MAX_SAFE_INTEGER)|| (current.samples.length && Number(us)<=current.samples.at(-1).us)) { fail(o,b,'Zeitfolge'); continue; }
-      current.samples.push({us:Number(us),axes:axes(d,o+16,current.ranges)});
+      // From 0.3.1 byte 2 = saturation mask, byte 3 = averaged raw values; older records
+      // (byte 3 = 0) are raw, their mask follows from the values themselves.
+      const n=b[3]||1, sat=b[3]?b[2]:satMask(d,o+16);
+      current.samples.push({us:Number(us),axes:axes(d,o+16,current.ranges),sat,n});
     } else {
       current.complete=true; current.dropped=d.getUint32(o+20,true);
       if(d.getUint32(o+16,true)!==current.samples.length) fail(o,b,'Sample-Anzahl');
@@ -101,12 +126,15 @@ export function csv(session) {
 }
 export function csvAll(sessions) {
   // Raw sensor axes first (unchanged columns), model axes appended at the end.
-  const lines=['session,t_sensor_us,utc_approx,gx_dps,gy_dps,gz_dps,ax_g,ay_g,az_g,session_start_utc_approx,sample_rate_hz,session_complete,session_sample_count,'+BODY_COLUMNS.join(',')+',board_id'];
+  // From 0.3.1 appended: sat_mask (bit 0..5 = gx..az at the limit at least once in the
+  // interval), avg_n (raw values per sample), internal_rate_hz (sensor ODR); empty if unknown.
+  const lines=['session,t_sensor_us,utc_approx,gx_dps,gy_dps,gz_dps,ax_g,ay_g,az_g,session_start_utc_approx,sample_rate_hz,session_complete,session_sample_count,'+BODY_COLUMNS.join(',')+',board_id,sat_mask,avg_n,internal_rate_hz'];
   for(const session of sessions) for(const s of session.samples) lines.push([
     session.id,s.us,session.epoch?new Date(session.epoch+s.us/1000).toISOString():'',
     ...s.axes.map(x=>x.toFixed(7)),session.epoch?new Date(session.epoch).toISOString():'',
     session.rateEstimated?'':(session.hz??''),session.complete??'',session.samples.length,
     ...bodyAxes(s.axes).map(x=>x.toFixed(7)),session.board??'',
+    s.sat??'',s.n??'',session.internalHz??'',
   ].join(','));
   return lines.join('\r\n')+'\r\n';
 }
